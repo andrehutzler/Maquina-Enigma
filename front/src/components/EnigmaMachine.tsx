@@ -6,8 +6,10 @@ import {
   REFLECTOR_CONFIGS,
   type RotorType,
   type ReflectorType,
+  type SignalPath,
 } from "../lib/enigma";
-import { RotateCcw, Settings, Volume2, VolumeX } from "lucide-react";
+import { RotateCcw, Settings, Volume2, VolumeX, Eye, EyeOff } from "lucide-react";
+import { SignalPathVisualization } from "./SignalPathVisualization";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const KEYBOARD_ROWS = ["QWERTZUIO", "ASDFGHJK", "PYXCVBNML"];
@@ -34,6 +36,8 @@ export function EnigmaMachine() {
   const [showSettings, setShowSettings] = useState(false);
   const [plugboardInput, setPlugboardInput] = useState("");
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [showVisualization, setShowVisualization] = useState(true);
+  const [currentSignalPath, setCurrentSignalPath] = useState<SignalPath | null>(null);
 
   const enigmaRef = useRef<Enigma | null>(null);
   const clickSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -70,11 +74,13 @@ export function EnigmaMachine() {
       playClick();
       setPressedKey(upperKey);
 
-      const output = enigmaRef.current.encipherChar(upperKey);
-      setLitLamp(output);
+      // Get the signal path with the encrypted character
+      const signalPath = enigmaRef.current.encipherCharWithPath(upperKey);
+      setCurrentSignalPath(signalPath);
+      setLitLamp(signalPath.outputLetter);
 
       setInputText((prev) => prev + upperKey);
-      setOutputText((prev) => prev + output);
+      setOutputText((prev) => prev + signalPath.outputLetter);
 
       // Update rotor positions in state
       const newPositions = enigmaRef.current.getPosicoes() as [string, string, string];
@@ -107,6 +113,7 @@ export function EnigmaMachine() {
   const resetMachine = () => {
     setInputText("");
     setOutputText("");
+    setCurrentSignalPath(null);
     setConfig((prev) => ({ ...prev, positions: ["A", "A", "A"] }));
     initEnigma();
   };
@@ -147,10 +154,20 @@ export function EnigmaMachine() {
         <p className="text-amber-200/60 text-sm mt-1">Wehrmacht / Luftwaffe</p>
       </div>
 
+      {/* Main container with machine and visualization */}
+      <div className={`flex gap-6 items-start justify-center w-full max-w-7xl ${showVisualization ? 'flex-col xl:flex-row' : ''}`}>
+        
       {/* Main Machine */}
       <div className="bg-gradient-to-b from-stone-700 to-stone-800 rounded-2xl p-6 shadow-2xl border-4 border-stone-600 max-w-2xl w-full">
         {/* Control buttons */}
         <div className="flex justify-end gap-2 mb-4">
+          <button
+            onClick={() => setShowVisualization(!showVisualization)}
+            className={`p-2 rounded-lg transition-colors ${showVisualization ? 'bg-amber-700 hover:bg-amber-600' : 'bg-stone-600 hover:bg-stone-500'} text-amber-100`}
+            title={showVisualization ? "Hide Visualization" : "Show Visualization"}
+          >
+            {showVisualization ? <Eye size={18} /> : <EyeOff size={18} />}
+          </button>
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="p-2 rounded-lg bg-stone-600 hover:bg-stone-500 text-amber-100 transition-colors"
@@ -332,6 +349,21 @@ export function EnigmaMachine() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Signal Path Visualization */}
+      {showVisualization && (
+        <div className="w-full max-w-xl xl:max-w-lg flex-shrink-0">
+          <SignalPathVisualization
+            signalPath={currentSignalPath}
+            rotorTypes={config.rotors}
+            rotorPositions={config.positions}
+            reflectorType={config.reflector}
+            plugboardPairs={config.plugboardPairs}
+          />
+        </div>
+      )}
+      
       </div>
 
       {/* Footer info */}

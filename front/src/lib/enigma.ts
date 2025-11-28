@@ -1,7 +1,22 @@
 // Enigma Machine TypeScript Implementation for Frontend
 // Adapted from the original JS implementation
 
-const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+export const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+// Signal path step for visualization
+export interface SignalStep {
+  component: "input" | "plugboard_in" | "rotor_r" | "rotor_m" | "rotor_l" | "reflector" | "rotor_l_back" | "rotor_m_back" | "rotor_r_back" | "plugboard_out" | "output";
+  inputLetter: string;
+  outputLetter: string;
+  inputIndex: number;
+  outputIndex: number;
+}
+
+export interface SignalPath {
+  steps: SignalStep[];
+  inputLetter: string;
+  outputLetter: string;
+}
 
 // Rotor class
 export class Rotor {
@@ -165,34 +180,145 @@ export class Enigma {
   }
 
   encipherChar(letra: string): string {
+    const result = this.encipherCharWithPath(letra);
+    return result.outputLetter;
+  }
+
+  encipherCharWithPath(letra: string): SignalPath {
     let c = letra.toUpperCase();
+    const steps: SignalStep[] = [];
+
     if (!ALPHABET.includes(c)) {
-      return letra;
+      return {
+        steps: [],
+        inputLetter: letra,
+        outputLetter: letra,
+      };
     }
+
+    const originalInput = c;
 
     // 1. Step rotors
     this._stepRotores();
 
+    // Input
+    steps.push({
+      component: "input",
+      inputLetter: c,
+      outputLetter: c,
+      inputIndex: c.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
     // 2. Plugboard (input)
+    let prev = c;
     c = this.plugboard.trocar(c);
+    steps.push({
+      component: "plugboard_in",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
 
     // 3. Forward path: right -> left
+    prev = c;
     c = this.rotors[2].passarParaFrente(c);
+    steps.push({
+      component: "rotor_r",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
+    prev = c;
     c = this.rotors[1].passarParaFrente(c);
+    steps.push({
+      component: "rotor_m",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
+    prev = c;
     c = this.rotors[0].passarParaFrente(c);
+    steps.push({
+      component: "rotor_l",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
 
     // 4. Reflector
+    prev = c;
     c = this.reflector.refletir(c);
+    steps.push({
+      component: "reflector",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
 
     // 5. Backward path: left -> right
+    prev = c;
     c = this.rotors[0].passarParaTras(c);
+    steps.push({
+      component: "rotor_l_back",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
+    prev = c;
     c = this.rotors[1].passarParaTras(c);
+    steps.push({
+      component: "rotor_m_back",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
+    prev = c;
     c = this.rotors[2].passarParaTras(c);
+    steps.push({
+      component: "rotor_r_back",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
 
     // 6. Plugboard (output)
+    prev = c;
     c = this.plugboard.trocar(c);
+    steps.push({
+      component: "plugboard_out",
+      inputLetter: prev,
+      outputLetter: c,
+      inputIndex: prev.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
 
-    return c;
+    // Output
+    steps.push({
+      component: "output",
+      inputLetter: c,
+      outputLetter: c,
+      inputIndex: c.charCodeAt(0) - 65,
+      outputIndex: c.charCodeAt(0) - 65,
+    });
+
+    return {
+      steps,
+      inputLetter: originalInput,
+      outputLetter: c,
+    };
   }
 
   encipherText(texto: string): string {
