@@ -1,23 +1,440 @@
 import { useMemo, type ReactNode } from "react";
 import {
   ALPHABET,
-  ROTOR_CONFIGS,
-  REFLECTOR_CONFIGS,
+  RotorFactory,
+  ReflectorFactory,
   type SignalPath,
-  type RotorType,
-  type ReflectorType,
+  type RotorId,
+  type ReflectorId,
 } from "../lib/enigma";
 
 interface Props {
   signalPath: SignalPath | null;
-  rotorTypes: [RotorType, RotorType, RotorType];
-  rotorPositions: [string, string, string];
-  reflectorType: ReflectorType;
-  plugboardPairs: string[];
+  rotorTypes: readonly [RotorId, RotorId, RotorId];
+  rotorPositions: readonly [string, string, string];
+  reflectorType: ReflectorId;
+  plugboardPairs: readonly string[];
+}
+
+interface Column {
+  id: string;
+  label: string;
+  x: number;
+}
+
+interface RotorWiringData {
+  type: RotorId;
+  position: string;
+  wiring: string;
+  positionOffset: number;
 }
 
 const LETTER_HEIGHT = 18;
+const LETTER_RADIUS = 7;
 const TOTAL_HEIGHT = 26 * LETTER_HEIGHT + 40;
+const SVG_WIDTH = 480;
+
+const COLORS = {
+  active: "#fbbf24",
+  inactive: "#57534e",
+  background: "#44403c",
+  inputHighlight: "#22c55e",
+  outputHighlight: "#ef4444",
+  text: "#a8a29e",
+  textHighlight: "#1c1917",
+  header: "#fef3c7",
+};
+
+class HighlightManager {
+  private highlights = new Map<string, Set<number>>();
+
+  add(columnId: string, letterIndex: number): void {
+    if (!this.highlights.has(columnId)) {
+      this.highlights.set(columnId, new Set());
+    }
+    this.highlights.get(columnId)!.add(letterIndex);
+  }
+
+  isHighlighted(columnId: string, letterIndex: number): boolean {
+    return this.highlights.get(columnId)?.has(letterIndex) ?? false;
+  }
+
+  static fromSignalPath(signalPath: SignalPath | null): HighlightManager {
+    const manager = new HighlightManager();
+    if (!signalPath) return manager;
+
+    for (const step of signalPath.steps) {
+      switch (step.component) {
+        case "input":
+          manager.add("input", step.inputIndex);
+          break;
+        case "plugboard_in":
+          manager.add("input", step.inputIndex);
+          manager.add("plugboard", step.outputIndex);
+          break;
+        case "rotor_r":
+          manager.add("plugboard", step.inputIndex);
+          manager.add("rotor_r", step.outputIndex);
+          break;
+        case "rotor_m":
+          manager.add("rotor_r", step.inputIndex);
+          manager.add("rotor_m", step.outputIndex);
+          break;
+        case "rotor_l":
+          manager.add("rotor_m", step.inputIndex);
+          manager.add("rotor_l", step.outputIndex);
+          break;
+        case "reflector":
+          manager.add("rotor_l", step.inputIndex);
+          manager.add("reflector", step.inputIndex);
+          manager.add("reflector", step.outputIndex);
+          break;
+        case "rotor_l_back":
+          manager.add("reflector", step.inputIndex);
+          manager.add("rotor_l", step.outputIndex);
+          break;
+        case "rotor_m_back":
+          manager.add("rotor_l", step.inputIndex);
+          manager.add("rotor_m", step.outputIndex);
+          break;
+        case "rotor_r_back":
+          manager.add("rotor_m", step.inputIndex);
+          manager.add("rotor_r", step.outputIndex);
+          break;
+        case "plugboard_out":
+          manager.add("rotor_r", step.inputIndex);
+          manager.add("plugboard", step.outputIndex);
+          break;
+        case "output":
+          manager.add("plugboard", step.inputIndex);
+          manager.add("input", step.outputIndex);
+          break;
+      }
+    }
+
+    return manager;
+  }
+}
+
+class SvgRenderer {
+  private signalPath: SignalPath | null;
+
+  constructor(signalPath: SignalPath | null) {
+    this.signalPath = signalPath;
+  }
+
+  getY(letterIndex: number): number {
+    return 30 + letterIndex * LETTER_HEIGHT;
+  }
+
+  isConnectionActive(
+    component: string,
+    inputIndex: number,
+    outputIndex: number
+  ): boolean {
+    return (
+      this.signalPath?.steps.some(
+        (s) =>
+          s.component === component &&
+          s.inputIndex === inputIndex &&
+          s.outputIndex === outputIndex
+      ) ?? false
+    );
+  }
+
+  createLine(
+    key: string,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    isActive: boolean
+  ): ReactNode {
+    return (
+      <line
+        key={key}
+        x1={x1}
+        y1={y1}
+        x2={x2}
+        y2={y2}
+        stroke={isActive ? COLORS.active : COLORS.inactive}
+        strokeWidth={isActive ? 2 : 0.5}
+        opacity={isActive ? 1 : 0.3}
+        strokeLinecap="round"
+      />
+    );
+  }
+
+  createArc(
+    key: string,
+    x: number,
+    y1: number,
+    y2: number,
+    isActive: boolean
+  ): ReactNode {
+    const midY = (y1 + y2) / 2;
+    const curveX = x + 15 + Math.abs((y2 - y1) / LETTER_HEIGHT) * 1.5;
+
+    return (
+      <path
+        key={key}
+        d={`M ${x + 20} ${y1} Q ${curveX} ${midY} ${x + 20} ${y2}`}
+        fill="none"
+        stroke={isActive ? COLORS.active : COLORS.inactive}
+        strokeWidth={isActive ? 2 : 0.5}
+        opacity={isActive ? 1 : 0.3}
+      />
+    );
+  }
+}
+
+function getColumns(rotorTypes: readonly [RotorId, RotorId, RotorId], reflectorType: ReflectorId): Column[] {
+  return [
+    { id: "input", label: "IN", x: 20 },
+    { id: "plugboard", label: "PLUG", x: 80 },
+    { id: "rotor_r", label: String(rotorTypes[2]), x: 160 },
+    { id: "rotor_m", label: String(rotorTypes[1]), x: 240 },
+    { id: "rotor_l", label: String(rotorTypes[0]), x: 320 },
+    { id: "reflector", label: `UKW-${reflectorType}`, x: 400 },
+  ];
+}
+
+function getRotorWirings(
+  rotorTypes: readonly [RotorId, RotorId, RotorId],
+  rotorPositions: readonly [string, string, string]
+): RotorWiringData[] {
+  return rotorTypes.map((type, idx) => {
+    const config = RotorFactory.getConfig(type);
+    const positionIndex = rotorPositions[idx].charCodeAt(0) - 65;
+    return {
+      type,
+      position: rotorPositions[idx],
+      wiring: config.wiring,
+      positionOffset: positionIndex,
+    };
+  });
+}
+
+function buildPlugboardMap(pairs: readonly string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const pair of pairs) {
+    if (pair.length === 2) {
+      map.set(pair[0], pair[1]);
+      map.set(pair[1], pair[0]);
+    }
+  }
+  return map;
+}
+
+function renderRotorWiring(
+  renderer: SvgRenderer,
+  rotorIdx: number,
+  colX: number,
+  wiring: string,
+  positionOffset: number,
+  signalPath: SignalPath | null
+): ReactNode[] {
+  const lines: ReactNode[] = [];
+  const componentId =
+    rotorIdx === 0 ? "rotor_r" : rotorIdx === 1 ? "rotor_m" : "rotor_l";
+  const backComponentId =
+    rotorIdx === 0 ? "rotor_r_back" : rotorIdx === 1 ? "rotor_m_back" : "rotor_l_back";
+
+  for (let i = 0; i < 26; i++) {
+    const offsetIndex = (i + positionOffset + 26) % 26;
+    const outputLetter = wiring[offsetIndex];
+    const outputIdx = outputLetter.charCodeAt(0) - 65;
+    const finalOutputIdx = (outputIdx - positionOffset + 26) % 26;
+
+    const y1 = renderer.getY(i);
+    const y2 = renderer.getY(finalOutputIdx);
+
+    const isForwardActive = renderer.isConnectionActive(componentId, i, finalOutputIdx);
+    const isBackActive = signalPath?.steps.some(
+      (s) =>
+        s.component === backComponentId &&
+        s.outputIndex === i &&
+        s.inputIndex === finalOutputIdx
+    );
+
+    lines.push(
+      renderer.createLine(
+        `rotor-${rotorIdx}-wire-${i}`,
+        colX - 20,
+        y1,
+        colX + 20,
+        y2,
+        isForwardActive || isBackActive || false
+      )
+    );
+  }
+
+  return lines;
+}
+
+function renderPlugboardConnections(
+  renderer: SvgRenderer,
+  columns: Column[],
+  plugboardMap: Map<string, string>,
+  signalPath: SignalPath | null
+): ReactNode[] {
+  const lines: ReactNode[] = [];
+
+  for (let i = 0; i < 26; i++) {
+    const letter = ALPHABET[i];
+    const mappedLetter = plugboardMap.get(letter) ?? letter;
+    const mappedIdx = mappedLetter.charCodeAt(0) - 65;
+
+    const isActiveIn = signalPath?.steps.some(
+      (s) => s.component === "plugboard_in" && s.inputIndex === i
+    );
+    const isActiveOut = signalPath?.steps.some(
+      (s) => s.component === "plugboard_out" && s.outputIndex === i
+    );
+
+    const x1 = columns[0].x + 25;
+    const x2 = columns[1].x - 25;
+
+    lines.push(
+      <line
+        key={`plug-${i}`}
+        x1={x1}
+        y1={renderer.getY(i)}
+        x2={x2}
+        y2={renderer.getY(mappedIdx)}
+        stroke={isActiveIn || isActiveOut ? COLORS.active : COLORS.inactive}
+        strokeWidth={isActiveIn || isActiveOut ? 2.5 : 0.5}
+        opacity={isActiveIn || isActiveOut ? 1 : 0.15}
+        strokeLinecap="round"
+      />
+    );
+  }
+
+  return lines;
+}
+
+function renderInterRotorConnections(
+  renderer: SvgRenderer,
+  columns: Column[],
+  signalPath: SignalPath | null
+): ReactNode[] {
+  const lines: ReactNode[] = [];
+
+  const connectionConfigs = [
+    { from: 1, to: 2, component: "rotor_r", backComponent: "rotor_r_back", prefix: "plug-rotor-r" },
+    { from: 2, to: 3, component: "rotor_m", backComponent: "rotor_m_back", prefix: "rotor-r-m" },
+    { from: 3, to: 4, component: "rotor_l", backComponent: "rotor_l_back", prefix: "rotor-m-l" },
+    { from: 4, to: 5, component: "reflector", backComponent: "rotor_l_back", prefix: "rotor-l-ref" },
+  ];
+
+  for (const config of connectionConfigs) {
+    for (let i = 0; i < 26; i++) {
+      const isActive = signalPath?.steps.some(
+        (s) =>
+          (s.component === config.component && s.inputIndex === i) ||
+          (s.component === config.backComponent && 
+            (config.component === "reflector" ? s.inputIndex === i : s.outputIndex === i))
+      );
+
+      const x1 = columns[config.from].x + 25;
+      const x2 = columns[config.to].x - 25;
+
+      lines.push(
+        <line
+          key={`${config.prefix}-${i}`}
+          x1={x1}
+          y1={renderer.getY(i)}
+          x2={x2}
+          y2={renderer.getY(i)}
+          stroke={isActive ? COLORS.active : COLORS.inactive}
+          strokeWidth={isActive ? 2.5 : 0.5}
+          opacity={isActive ? 1 : 0.15}
+          strokeLinecap="round"
+        />
+      );
+    }
+  }
+
+  return lines;
+}
+
+function renderReflectorWiring(
+  renderer: SvgRenderer,
+  colX: number,
+  reflectorWiring: string,
+  signalPath: SignalPath | null
+): ReactNode[] {
+  const lines: ReactNode[] = [];
+  const drawnPairs = new Set<string>();
+
+  for (let i = 0; i < 26; i++) {
+    const outputLetter = reflectorWiring[i];
+    const outputIdx = outputLetter.charCodeAt(0) - 65;
+
+    const pairKey = [i, outputIdx].sort().join("-");
+    if (drawnPairs.has(pairKey)) continue;
+    drawnPairs.add(pairKey);
+
+    const y1 = renderer.getY(i);
+    const y2 = renderer.getY(outputIdx);
+
+    const isActive = signalPath?.steps.some(
+      (s) =>
+        s.component === "reflector" &&
+        (s.inputIndex === i || s.outputIndex === i)
+    );
+
+    lines.push(renderer.createArc(`ref-${i}-${outputIdx}`, colX, y1, y2, isActive || false));
+  }
+
+  return lines;
+}
+
+function renderLetterColumns(
+  columns: Column[],
+  highlightManager: HighlightManager,
+  signalPath: SignalPath | null,
+  renderer: SvgRenderer
+): ReactNode {
+  return columns.map((col) => (
+    <g key={`letters-${col.id}`}>
+      {ALPHABET.split("").map((letter, i) => {
+        const isHighlighted = highlightManager.isHighlighted(col.id, i);
+        const isInput = col.id === "input" && signalPath?.inputLetter === letter;
+        const isOutput = col.id === "input" && signalPath?.outputLetter === letter;
+
+        let strokeColor = COLORS.inactive;
+        if (isInput) strokeColor = COLORS.inputHighlight;
+        else if (isOutput) strokeColor = COLORS.outputHighlight;
+        else if (isHighlighted) strokeColor = COLORS.active;
+
+        return (
+          <g key={`${col.id}-${letter}`}>
+            <circle
+              cx={col.x}
+              cy={renderer.getY(i)}
+              r={LETTER_RADIUS}
+              fill={isHighlighted ? COLORS.active : COLORS.background}
+              stroke={strokeColor}
+              strokeWidth={isInput || isOutput ? 2 : 1}
+            />
+            <text
+              x={col.x}
+              y={renderer.getY(i) + 3}
+              fill={isHighlighted ? COLORS.textHighlight : COLORS.text}
+              fontSize="8"
+              textAnchor="middle"
+              fontFamily="monospace"
+              fontWeight={isHighlighted ? "bold" : "normal"}
+            >
+              {letter}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  ));
+}
 
 export function SignalPathVisualization({
   signalPath,
@@ -26,420 +443,117 @@ export function SignalPathVisualization({
   reflectorType,
   plugboardPairs,
 }: Props) {
-  // Get rotor wirings
-  const rotorWirings = useMemo(() => {
-    return rotorTypes.map((type, idx) => {
-      const rotor = ROTOR_CONFIGS[type].factory();
-      rotor.setPosicaoPorLetra(rotorPositions[idx]);
-      return {
-        type,
-        position: rotorPositions[idx],
-        wiring: rotor.wiring,
-        positionOffset: rotor.posicao,
-      };
-    });
-  }, [rotorTypes, rotorPositions]);
+  // Memoized data
+  const columns = useMemo(
+    () => getColumns(rotorTypes, reflectorType),
+    [rotorTypes, reflectorType]
+  );
 
-  const reflectorWiring = useMemo(() => {
-    return REFLECTOR_CONFIGS[reflectorType].factory().wiring;
-  }, [reflectorType]);
+  const rotorWirings = useMemo(
+    () => getRotorWirings(rotorTypes, rotorPositions),
+    [rotorTypes, rotorPositions]
+  );
 
-  // Build plugboard map
-  const plugboardMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const pair of plugboardPairs) {
-      if (pair.length === 2) {
-        map.set(pair[0], pair[1]);
-        map.set(pair[1], pair[0]);
-      }
-    }
-    return map;
-  }, [plugboardPairs]);
+  const reflectorWiring = useMemo(
+    () => ReflectorFactory.getConfig(reflectorType).wiring,
+    [reflectorType]
+  );
 
-  // Calculate positions
-  const columns = [
-    { id: "input", label: "IN", x: 20 },
-    { id: "plugboard", label: "PLUG", x: 80 },
-    { id: "rotor_r", label: rotorTypes[2], x: 160 },
-    { id: "rotor_m", label: rotorTypes[1], x: 240 },
-    { id: "rotor_l", label: rotorTypes[0], x: 320 },
-    { id: "reflector", label: `UKW-${reflectorType}`, x: 400 },
-  ];
+  const plugboardMap = useMemo(
+    () => buildPlugboardMap(plugboardPairs),
+    [plugboardPairs]
+  );
 
-  const getY = (letterIndex: number) => 30 + letterIndex * LETTER_HEIGHT;
+  const highlightManager = useMemo(
+    () => HighlightManager.fromSignalPath(signalPath),
+    [signalPath]
+  );
 
-  // Get highlighted letters
-  const highlightedLetters = useMemo(() => {
-    if (!signalPath) return new Map<string, Set<number>>();
-    const highlights = new Map<string, Set<number>>();
-    
-    const addHighlight = (col: string, idx: number) => {
-      if (!highlights.has(col)) highlights.set(col, new Set());
-      highlights.get(col)!.add(idx);
-    };
-
-    for (const step of signalPath.steps) {
-      switch (step.component) {
-        case "input":
-          addHighlight("input", step.inputIndex);
-          break;
-        case "plugboard_in":
-          addHighlight("input", step.inputIndex);
-          addHighlight("plugboard", step.outputIndex);
-          break;
-        case "rotor_r":
-          addHighlight("plugboard", step.inputIndex);
-          addHighlight("rotor_r", step.outputIndex);
-          break;
-        case "rotor_m":
-          addHighlight("rotor_r", step.inputIndex);
-          addHighlight("rotor_m", step.outputIndex);
-          break;
-        case "rotor_l":
-          addHighlight("rotor_m", step.inputIndex);
-          addHighlight("rotor_l", step.outputIndex);
-          break;
-        case "reflector":
-          addHighlight("rotor_l", step.inputIndex);
-          addHighlight("reflector", step.inputIndex);
-          addHighlight("reflector", step.outputIndex);
-          break;
-        case "rotor_l_back":
-          addHighlight("reflector", step.inputIndex);
-          addHighlight("rotor_l", step.outputIndex);
-          break;
-        case "rotor_m_back":
-          addHighlight("rotor_l", step.inputIndex);
-          addHighlight("rotor_m", step.outputIndex);
-          break;
-        case "rotor_r_back":
-          addHighlight("rotor_m", step.inputIndex);
-          addHighlight("rotor_r", step.outputIndex);
-          break;
-        case "plugboard_out":
-          addHighlight("rotor_r", step.inputIndex);
-          addHighlight("plugboard", step.outputIndex);
-          break;
-        case "output":
-          addHighlight("plugboard", step.inputIndex);
-          addHighlight("input", step.outputIndex);
-          break;
-      }
-    }
-    return highlights;
-  }, [signalPath]);
-
-  const isLetterHighlighted = (colId: string, letterIdx: number) => {
-    return highlightedLetters.get(colId)?.has(letterIdx) ?? false;
-  };
-
-  // Render rotor internal wiring
-  const renderRotorWiring = (
-    rotorIdx: number,
-    colX: number,
-    wiring: string,
-    positionOffset: number
-  ) => {
-    const lines: ReactNode[] = [];
-    
-    for (let i = 0; i < 26; i++) {
-      const inputIdx = i;
-      const idxComOffset = (inputIdx + positionOffset + 26) % 26;
-      const outputLetter = wiring[idxComOffset];
-      const outputIdx = outputLetter.charCodeAt(0) - 65;
-      const finalOutputIdx = (outputIdx - positionOffset + 26) % 26;
-      
-      const y1 = getY(i);
-      const y2 = getY(finalOutputIdx);
-      
-      // Check if this connection is active
-      const componentId = rotorIdx === 0 ? "rotor_r" : rotorIdx === 1 ? "rotor_m" : "rotor_l";
-      const isForwardActive = signalPath?.steps.some(
-        s => s.component === componentId && s.inputIndex === i && s.outputIndex === finalOutputIdx
-      );
-      const backComponentId = rotorIdx === 0 ? "rotor_r_back" : rotorIdx === 1 ? "rotor_m_back" : "rotor_l_back";
-      const isBackActive = signalPath?.steps.some(
-        s => s.component === backComponentId && s.outputIndex === i && s.inputIndex === finalOutputIdx
-      );
-      
-      const isActive = isForwardActive || isBackActive;
-      
-      lines.push(
-        <line
-          key={`rotor-${rotorIdx}-wire-${i}`}
-          x1={colX - 20}
-          y1={y1}
-          x2={colX + 20}
-          y2={y2}
-          stroke={isActive ? "#fbbf24" : "#57534e"}
-          strokeWidth={isActive ? 2 : 0.5}
-          opacity={isActive ? 1 : 0.3}
-        />
-      );
-    }
-    return lines;
-  };
-
-  // Render connection between columns
-  const renderConnection = (
-    fromCol: number,
-    toCol: number,
-    fromIdx: number,
-    toIdx: number,
-    isActive: boolean,
-    key: string
-  ) => {
-    const x1 = columns[fromCol].x + 25;
-    const x2 = columns[toCol].x - 25;
-    const y1 = getY(fromIdx);
-    const y2 = getY(toIdx);
-    
-    return (
-      <line
-        key={key}
-        x1={x1}
-        y1={y1}
-        x2={x2}
-        y2={y2}
-        stroke={isActive ? "#fbbf24" : "#57534e"}
-        strokeWidth={isActive ? 2.5 : 0.5}
-        opacity={isActive ? 1 : 0.15}
-        strokeLinecap="round"
-      />
-    );
-  };
-
-  // Render plugboard connections
-  const renderPlugboardConnections = () => {
-    const lines: ReactNode[] = [];
-    
-    // Connection from input to plugboard (all 26 letters)
-    for (let i = 0; i < 26; i++) {
-      const letter = ALPHABET[i];
-      const mappedLetter = plugboardMap.get(letter) ?? letter;
-      const mappedIdx = mappedLetter.charCodeAt(0) - 65;
-      
-      const isActiveIn = signalPath?.steps.some(
-        s => s.component === "plugboard_in" && s.inputIndex === i
-      );
-      const isActiveOut = signalPath?.steps.some(
-        s => s.component === "plugboard_out" && s.outputIndex === i
-      );
-      
-      lines.push(
-        renderConnection(0, 1, i, mappedIdx, isActiveIn || isActiveOut || false, `plug-${i}`)
-      );
-    }
-    
-    return lines;
-  };
-
-  // Render inter-rotor connections
-  const renderInterRotorConnections = () => {
-    const lines: ReactNode[] = [];
-    
-    // Plugboard to Rotor R
-    for (let i = 0; i < 26; i++) {
-      const isActive = signalPath?.steps.some(
-        s => (s.component === "rotor_r" && s.inputIndex === i) ||
-             (s.component === "rotor_r_back" && s.outputIndex === i)
-      );
-      lines.push(renderConnection(1, 2, i, i, isActive || false, `plug-rotor-r-${i}`));
-    }
-    
-    // Rotor R to Rotor M
-    for (let i = 0; i < 26; i++) {
-      const isActive = signalPath?.steps.some(
-        s => (s.component === "rotor_m" && s.inputIndex === i) ||
-             (s.component === "rotor_m_back" && s.outputIndex === i)
-      );
-      lines.push(renderConnection(2, 3, i, i, isActive || false, `rotor-r-m-${i}`));
-    }
-    
-    // Rotor M to Rotor L
-    for (let i = 0; i < 26; i++) {
-      const isActive = signalPath?.steps.some(
-        s => (s.component === "rotor_l" && s.inputIndex === i) ||
-             (s.component === "rotor_l_back" && s.outputIndex === i)
-      );
-      lines.push(renderConnection(3, 4, i, i, isActive || false, `rotor-m-l-${i}`));
-    }
-    
-    // Rotor L to Reflector
-    for (let i = 0; i < 26; i++) {
-      const isActive = signalPath?.steps.some(
-        s => (s.component === "reflector" && s.inputIndex === i) ||
-             (s.component === "rotor_l_back" && s.inputIndex === i)
-      );
-      lines.push(renderConnection(4, 5, i, i, isActive || false, `rotor-l-ref-${i}`));
-    }
-    
-    return lines;
-  };
-
-  // Render reflector internal wiring
-  const renderReflectorWiring = () => {
-    const lines: ReactNode[] = [];
-    const colX = columns[5].x;
-    const drawnPairs = new Set<string>();
-    
-    for (let i = 0; i < 26; i++) {
-      const outputLetter = reflectorWiring[i];
-      const outputIdx = outputLetter.charCodeAt(0) - 65;
-      
-      // Only draw each pair once
-      const pairKey = [i, outputIdx].sort().join("-");
-      if (drawnPairs.has(pairKey)) continue;
-      drawnPairs.add(pairKey);
-      
-      const y1 = getY(i);
-      const y2 = getY(outputIdx);
-      
-      const isActive = signalPath?.steps.some(
-        s => s.component === "reflector" && (s.inputIndex === i || s.outputIndex === i)
-      );
-      
-      // Draw arc for reflector
-      const midY = (y1 + y2) / 2;
-      const curveX = colX + 15 + Math.abs(outputIdx - i) * 1.5;
-      
-      lines.push(
-        <path
-          key={`ref-${i}-${outputIdx}`}
-          d={`M ${colX + 20} ${y1} Q ${curveX} ${midY} ${colX + 20} ${y2}`}
-          fill="none"
-          stroke={isActive ? "#fbbf24" : "#57534e"}
-          strokeWidth={isActive ? 2 : 0.5}
-          opacity={isActive ? 1 : 0.3}
-        />
-      );
-    }
-    return lines;
-  };
+  const renderer = useMemo(() => new SvgRenderer(signalPath), [signalPath]);
 
   return (
     <div className="bg-stone-900/80 rounded-xl p-4 border border-stone-600">
       <h3 className="text-amber-100 font-bold mb-3 text-center text-sm">
         Signal Path Visualization
       </h3>
-      
-      {/* Legend */}
+
       <div className="flex justify-center gap-4 mb-3 text-xs">
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded-full bg-amber-400"></div>
+          <div className="w-3 h-3 rounded-full bg-amber-400" />
           <span className="text-amber-200/80">Active Signal</span>
         </div>
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded-full bg-stone-600"></div>
+          <div className="w-3 h-3 rounded-full bg-stone-600" />
           <span className="text-amber-200/80">Wiring</span>
         </div>
       </div>
 
       <div className="overflow-x-auto">
         <svg
-          width="480"
+          width={SVG_WIDTH}
           height={TOTAL_HEIGHT}
           className="mx-auto"
-          style={{ minWidth: "480px" }}
+          style={{ minWidth: `${SVG_WIDTH}px` }}
         >
-          {/* Background */}
-          <rect x="0" y="0" width="480" height={TOTAL_HEIGHT} fill="transparent" />
-
-          {/* Column headers */}
           {columns.map((col) => (
             <g key={col.id}>
               <text
                 x={col.x}
                 y={15}
-                fill="#fef3c7"
+                fill={COLORS.header}
                 fontSize="10"
                 textAnchor="middle"
                 fontWeight="bold"
               >
                 {col.label}
               </text>
-              {/* Position indicator for rotors */}
-              {(col.id === "rotor_r" || col.id === "rotor_m" || col.id === "rotor_l") && (
+              {["rotor_r", "rotor_m", "rotor_l"].includes(col.id) && (
                 <text
                   x={col.x}
                   y={TOTAL_HEIGHT - 5}
-                  fill="#fbbf24"
+                  fill={COLORS.active}
                   fontSize="9"
                   textAnchor="middle"
                 >
-                  {col.id === "rotor_r" ? rotorPositions[2] : col.id === "rotor_m" ? rotorPositions[1] : rotorPositions[0]}
+                  {col.id === "rotor_r"
+                    ? rotorPositions[2]
+                    : col.id === "rotor_m"
+                    ? rotorPositions[1]
+                    : rotorPositions[0]}
                 </text>
               )}
             </g>
           ))}
 
-          {/* Render all connections first (behind letters) */}
           <g className="connections">
-            {renderPlugboardConnections()}
-            {renderInterRotorConnections()}
-            {renderRotorWiring(0, columns[2].x, rotorWirings[2].wiring, rotorWirings[2].positionOffset)}
-            {renderRotorWiring(1, columns[3].x, rotorWirings[1].wiring, rotorWirings[1].positionOffset)}
-            {renderRotorWiring(2, columns[4].x, rotorWirings[0].wiring, rotorWirings[0].positionOffset)}
-            {renderReflectorWiring()}
+            {renderPlugboardConnections(renderer, columns, plugboardMap, signalPath)}
+            {renderInterRotorConnections(renderer, columns, signalPath)}
+            {renderRotorWiring(renderer, 0, columns[2].x, rotorWirings[2].wiring, rotorWirings[2].positionOffset, signalPath)}
+            {renderRotorWiring(renderer, 1, columns[3].x, rotorWirings[1].wiring, rotorWirings[1].positionOffset, signalPath)}
+            {renderRotorWiring(renderer, 2, columns[4].x, rotorWirings[0].wiring, rotorWirings[0].positionOffset, signalPath)}
+            {renderReflectorWiring(renderer, columns[5].x, reflectorWiring, signalPath)}
           </g>
 
-          {/* Letter columns */}
-          {columns.map((col) => (
-            <g key={`letters-${col.id}`}>
-              {ALPHABET.split("").map((letter, i) => {
-                const isHighlighted = isLetterHighlighted(col.id, i);
-                const isInput = col.id === "input" && signalPath?.inputLetter === letter;
-                const isOutput = col.id === "input" && signalPath?.outputLetter === letter;
-                
-                return (
-                  <g key={`${col.id}-${letter}`}>
-                    <circle
-                      cx={col.x}
-                      cy={getY(i)}
-                      r={7}
-                      fill={isHighlighted ? "#fbbf24" : "#44403c"}
-                      stroke={isInput ? "#22c55e" : isOutput ? "#ef4444" : isHighlighted ? "#fbbf24" : "#57534e"}
-                      strokeWidth={isInput || isOutput ? 2 : 1}
-                    />
-                    <text
-                      x={col.x}
-                      y={getY(i) + 3}
-                      fill={isHighlighted ? "#1c1917" : "#a8a29e"}
-                      fontSize="8"
-                      textAnchor="middle"
-                      fontFamily="monospace"
-                      fontWeight={isHighlighted ? "bold" : "normal"}
-                    >
-                      {letter}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          ))}
+          {renderLetterColumns(columns, highlightManager, signalPath, renderer)}
 
-          {/* Direction arrows */}
-          <defs>
-            <marker
-              id="arrowhead"
-              markerWidth="6"
-              markerHeight="6"
-              refX="3"
-              refY="3"
-              orient="auto"
-            >
-              <path d="M0,0 L6,3 L0,6 Z" fill="#fbbf24" />
-            </marker>
-          </defs>
-          
           {signalPath && (
             <>
-              {/* Forward path indicator */}
-              <text x="240" y={TOTAL_HEIGHT - 18} fill="#22c55e" fontSize="8" textAnchor="middle">
+              <text
+                x="240"
+                y={TOTAL_HEIGHT - 18}
+                fill={COLORS.inputHighlight}
+                fontSize="8"
+                textAnchor="middle"
+              >
                 Forward: {signalPath.inputLetter} → Plugboard → Rotors → Reflector
               </text>
-              {/* Backward path indicator */}
-              <text x="240" y={TOTAL_HEIGHT - 8} fill="#ef4444" fontSize="8" textAnchor="middle">
+              <text
+                x="240"
+                y={TOTAL_HEIGHT - 8}
+                fill={COLORS.outputHighlight}
+                fontSize="8"
+                textAnchor="middle"
+              >
                 Return: Reflector → Rotors → Plugboard → {signalPath.outputLetter}
               </text>
             </>
@@ -447,20 +561,23 @@ export function SignalPathVisualization({
         </svg>
       </div>
 
-      {/* Current signal info */}
-      {signalPath && (
-        <div className="mt-3 p-2 bg-stone-800 rounded-lg text-center">
-          <span className="text-green-400 font-mono font-bold">{signalPath.inputLetter}</span>
-          <span className="text-amber-200/60 mx-2">→</span>
-          <span className="text-red-400 font-mono font-bold">{signalPath.outputLetter}</span>
-        </div>
-      )}
-
-      {!signalPath && (
-        <div className="mt-3 p-2 bg-stone-800 rounded-lg text-center text-stone-500 text-sm">
-          Press a key to see the signal path
-        </div>
-      )}
+      <div className="mt-3 p-2 bg-stone-800 rounded-lg text-center">
+        {signalPath ? (
+          <>
+            <span className="text-green-400 font-mono font-bold">
+              {signalPath.inputLetter}
+            </span>
+            <span className="text-amber-200/60 mx-2">→</span>
+            <span className="text-red-400 font-mono font-bold">
+              {signalPath.outputLetter}
+            </span>
+          </>
+        ) : (
+          <span className="text-stone-500 text-sm">
+            Press a key to see the signal path
+          </span>
+        )}
+      </div>
     </div>
   );
 }

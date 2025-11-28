@@ -1,359 +1,455 @@
-// Enigma Machine TypeScript Implementation for Frontend
-// Adapted from the original JS implementation
-
 export const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const ALPHABET_SIZE = 26;
+const ASCII_OFFSET = 65; // 'A' = 65 in ASCII
 
-// Signal path step for visualization
+export type RotorId = "I" | "II" | "III" | "IV" | "V";
+export type ReflectorId = "B" | "C";
+export type ComponentType = 
+  | "input" 
+  | "plugboard_in" 
+  | "rotor_r" 
+  | "rotor_m" 
+  | "rotor_l" 
+  | "reflector" 
+  | "rotor_l_back" 
+  | "rotor_m_back" 
+  | "rotor_r_back" 
+  | "plugboard_out" 
+  | "output";
+
 export interface SignalStep {
-  component: "input" | "plugboard_in" | "rotor_r" | "rotor_m" | "rotor_l" | "reflector" | "rotor_l_back" | "rotor_m_back" | "rotor_r_back" | "plugboard_out" | "output";
-  inputLetter: string;
-  outputLetter: string;
-  inputIndex: number;
-  outputIndex: number;
+  readonly component: ComponentType;
+  readonly inputLetter: string;
+  readonly outputLetter: string;
+  readonly inputIndex: number;
+  readonly outputIndex: number;
 }
 
 export interface SignalPath {
-  steps: SignalStep[];
-  inputLetter: string;
-  outputLetter: string;
+  readonly steps: readonly SignalStep[];
+  readonly inputLetter: string;
+  readonly outputLetter: string;
 }
 
-// Rotor class
+export interface RotorConfig {
+  readonly id: RotorId;
+  readonly wiring: string;
+  readonly notch: string;
+}
+
+export interface ReflectorConfig {
+  readonly id: ReflectorId;
+  readonly wiring: string;
+}
+
+export interface EnigmaSettings {
+  readonly rotors: readonly [RotorId, RotorId, RotorId];
+  readonly reflector: ReflectorId;
+  readonly positions: readonly [string, string, string];
+  readonly plugboardPairs: readonly string[];
+}
+
+function letterToIndex(letter: string): number {
+  return letter.charCodeAt(0) - ASCII_OFFSET;
+}
+
+function indexToLetter(index: number): string {
+  return ALPHABET[((index % ALPHABET_SIZE) + ALPHABET_SIZE) % ALPHABET_SIZE];
+}
+
+function normalizeIndex(index: number): number {
+  return ((index % ALPHABET_SIZE) + ALPHABET_SIZE) % ALPHABET_SIZE;
+}
+
+function isValidLetter(char: string): boolean {
+  return char.length === 1 && ALPHABET.includes(char.toUpperCase());
+}
+
 export class Rotor {
-  wiring: string;
-  notchChar: string;
-  posicao: number;
-  inverseWiring: string;
+  private readonly _id: RotorId;
+  private readonly _wiring: string;
+  private readonly _inverseWiring: string;
+  private readonly _notch: string;
+  private _position: number;
 
-  constructor(wiring: string, notchChar: string, posicaoInicial: number = 0) {
-    if (wiring.length !== 26) {
-      throw new Error("Rotor wiring must have 26 letters");
+  constructor(config: RotorConfig, initialPosition: number = 0) {
+    this.validateWiring(config.wiring);
+    
+    this._id = config.id;
+    this._wiring = config.wiring.toUpperCase();
+    this._notch = config.notch.toUpperCase();
+    this._position = normalizeIndex(initialPosition);
+    this._inverseWiring = this.computeInverseWiring();
+  }
+
+  get id(): RotorId { return this._id; }
+  get position(): number { return this._position; }
+  get positionLetter(): string { return indexToLetter(this._position); }
+  get wiring(): string { return this._wiring; }
+  get notch(): string { return this._notch; }
+
+  private validateWiring(wiring: string): void {
+    if (wiring.length !== ALPHABET_SIZE) {
+      throw new Error(`Rotor wiring must have exactly ${ALPHABET_SIZE} letters`);
     }
-    this.wiring = wiring.toUpperCase();
-    this.notchChar = notchChar.toUpperCase();
-    this.posicao = posicaoInicial % 26;
-    this.inverseWiring = this._calcularInverseWiring();
   }
 
-  _calcularInverseWiring(): string {
-    const inv = new Array(26);
-    for (let i = 0; i < 26; i++) {
-      const saida = this.wiring[i];
-      const idxSaida = saida.charCodeAt(0) - 65;
-      inv[idxSaida] = ALPHABET[i];
+  private computeInverseWiring(): string {
+    const inverse = new Array<string>(ALPHABET_SIZE);
+    
+    for (let i = 0; i < ALPHABET_SIZE; i++) {
+      const outputLetter = this._wiring[i];
+      const outputIndex = letterToIndex(outputLetter);
+      inverse[outputIndex] = indexToLetter(i);
     }
-    return inv.join("");
+    
+    return inverse.join("");
   }
 
-  girar(): void {
-    this.posicao = (this.posicao + 1) % 26;
+  rotate(): void {
+    this._position = normalizeIndex(this._position + 1);
   }
 
-  estaNoNotch(): boolean {
-    const letraNaJanela = ALPHABET[this.posicao];
-    return letraNaJanela === this.notchChar;
+  isAtNotch(): boolean {
+    return this.positionLetter === this._notch;
   }
 
-  passarParaFrente(letra: string): string {
-    const idxEntrada = letra.charCodeAt(0) - 65;
-    const idxComOffset = (idxEntrada + this.posicao + 26) % 26;
-    const letraSaida = this.wiring[idxComOffset];
-    const idxSaida = letraSaida.charCodeAt(0) - 65;
-    const idxFinal = (idxSaida - this.posicao + 26) % 26;
-    return ALPHABET[idxFinal];
+  setPosition(letter: string): void {
+    if (!isValidLetter(letter)) {
+      throw new Error(`Invalid position letter: ${letter}`);
+    }
+    this._position = letterToIndex(letter.toUpperCase());
   }
 
-  passarParaTras(letra: string): string {
-    const idxEntrada = letra.charCodeAt(0) - 65;
-    const idxComOffset = (idxEntrada + this.posicao + 26) % 26;
-    const letraSaida = this.inverseWiring[idxComOffset];
-    const idxSaida = letraSaida.charCodeAt(0) - 65;
-    const idxFinal = (idxSaida - this.posicao + 26) % 26;
-    return ALPHABET[idxFinal];
+  forward(inputLetter: string): string {
+    const inputIndex = letterToIndex(inputLetter);
+    const offsetIndex = normalizeIndex(inputIndex + this._position);
+    const outputLetter = this._wiring[offsetIndex];
+    const outputIndex = letterToIndex(outputLetter);
+    const finalIndex = normalizeIndex(outputIndex - this._position);
+    
+    return indexToLetter(finalIndex);
   }
 
-  setPosicaoPorLetra(letra: string): void {
-    const idx = letra.toUpperCase().charCodeAt(0) - 65;
-    if (idx < 0 || idx > 25) throw new Error("Invalid position");
-    this.posicao = idx;
+  backward(inputLetter: string): string {
+    const inputIndex = letterToIndex(inputLetter);
+    const offsetIndex = normalizeIndex(inputIndex + this._position);
+    const outputLetter = this._inverseWiring[offsetIndex];
+    const outputIndex = letterToIndex(outputLetter);
+    const finalIndex = normalizeIndex(outputIndex - this._position);
+    
+    return indexToLetter(finalIndex);
   }
 
-  getPosicaoLetra(): string {
-    return ALPHABET[this.posicao];
+  clone(): Rotor {
+    const rotor = new Rotor({
+      id: this._id,
+      wiring: this._wiring,
+      notch: this._notch,
+    }, this._position);
+    return rotor;
   }
 }
 
-// Plugboard class
-export class Plugboard {
-  mapa: Map<string, string>;
-
-  constructor(pares: string[] = []) {
-    this.mapa = new Map();
-
-    // Initialize identity mapping
-    for (const letra of ALPHABET) {
-      this.mapa.set(letra, letra);
-    }
-
-    // Apply pairs
-    for (const par of pares) {
-      if (par.length !== 2) continue;
-      const a = par[0].toUpperCase();
-      const b = par[1].toUpperCase();
-      if (!ALPHABET.includes(a) || !ALPHABET.includes(b)) continue;
-
-      this.mapa.set(a, b);
-      this.mapa.set(b, a);
-    }
-  }
-
-  trocar(letra: string): string {
-    const l = letra.toUpperCase();
-    if (!ALPHABET.includes(l)) return letra;
-    return this.mapa.get(l) ?? l;
-  }
-}
-
-// Reflector class
 export class Reflector {
-  wiring: string;
+  private readonly _id: ReflectorId;
+  private readonly _wiring: string;
 
-  constructor(wiring: string) {
-    if (wiring.length !== 26) {
-      throw new Error("Reflector wiring must have 26 letters");
-    }
-    this.wiring = wiring.toUpperCase();
+  constructor(config: ReflectorConfig) {
+    this.validateWiring(config.wiring);
+    
+    this._id = config.id;
+    this._wiring = config.wiring.toUpperCase();
   }
 
-  refletir(letra: string): string {
-    const idx = letra.charCodeAt(0) - 65;
-    if (idx < 0 || idx > 25) return letra;
-    return this.wiring[idx];
+  get id(): ReflectorId { return this._id; }
+  get wiring(): string { return this._wiring; }
+
+  private validateWiring(wiring: string): void {
+    if (wiring.length !== ALPHABET_SIZE) {
+      throw new Error(`Reflector wiring must have exactly ${ALPHABET_SIZE} letters`);
+    }
+  }
+
+  reflect(inputLetter: string): string {
+    const index = letterToIndex(inputLetter);
+    return this._wiring[index];
   }
 }
 
-// Main Enigma class
-export class Enigma {
-  reflector: Reflector;
-  rotors: Rotor[];
-  plugboard: Plugboard;
+export class Plugboard {
+  private readonly _mappings: Map<string, string>;
+  private readonly _pairs: readonly string[];
 
-  constructor(reflector: Reflector, rotors: Rotor[], plugboard: Plugboard) {
-    if (rotors.length !== 3) {
-      throw new Error("Use exactly 3 rotors for M3 version");
-    }
-    this.reflector = reflector;
-    this.rotors = rotors;
-    this.plugboard = plugboard;
+  constructor(pairs: readonly string[] = []) {
+    this._pairs = pairs;
+    this._mappings = this.buildMappings(pairs);
   }
 
-  setPosicoes(posicoes: string[]): void {
-    if (posicoes.length !== 3) {
-      throw new Error("3 positions required (left, middle, right)");
+  get pairs(): readonly string[] { return this._pairs; }
+
+  private buildMappings(pairs: readonly string[]): Map<string, string> {
+    const mappings = new Map<string, string>();
+    
+    for (const letter of ALPHABET) {
+      mappings.set(letter, letter);
     }
-    for (let i = 0; i < 3; i++) {
-      this.rotors[i].setPosicaoPorLetra(posicoes[i]);
+    
+    for (const pair of pairs) {
+      if (pair.length !== 2) continue;
+      
+      const [a, b] = [pair[0].toUpperCase(), pair[1].toUpperCase()];
+      
+      if (!isValidLetter(a) || !isValidLetter(b)) continue;
+      
+      mappings.set(a, b);
+      mappings.set(b, a);
     }
+    
+    return mappings;
   }
 
-  getPosicoes(): string[] {
-    return this.rotors.map((r) => r.getPosicaoLetra());
+  swap(letter: string): string {
+    const upperLetter = letter.toUpperCase();
+    return this._mappings.get(upperLetter) ?? upperLetter;
   }
 
-  _stepRotores(): void {
-    const [rotorEsq, rotorMeio, rotorDir] = this.rotors;
+  isConnected(letter: string): boolean {
+    const upperLetter = letter.toUpperCase();
+    return this._mappings.get(upperLetter) !== upperLetter;
+  }
+}
 
-    const meioNoNotch = rotorMeio.estaNoNotch();
-    const dirNoNotch = rotorDir.estaNoNotch();
+export class SignalTracer {
+  private _steps: SignalStep[] = [];
 
-    // Double-step mechanism
-    if (meioNoNotch) {
-      rotorMeio.girar();
-      rotorEsq.girar();
-    }
-
-    if (dirNoNotch) {
-      rotorMeio.girar();
-    }
-
-    rotorDir.girar();
+  record(component: ComponentType, inputLetter: string, outputLetter: string): void {
+    this._steps.push({
+      component,
+      inputLetter,
+      outputLetter,
+      inputIndex: letterToIndex(inputLetter),
+      outputIndex: letterToIndex(outputLetter),
+    });
   }
 
-  encipherChar(letra: string): string {
-    const result = this.encipherCharWithPath(letra);
-    return result.outputLetter;
-  }
-
-  encipherCharWithPath(letra: string): SignalPath {
-    let c = letra.toUpperCase();
-    const steps: SignalStep[] = [];
-
-    if (!ALPHABET.includes(c)) {
-      return {
-        steps: [],
-        inputLetter: letra,
-        outputLetter: letra,
-      };
-    }
-
-    const originalInput = c;
-
-    // 1. Step rotors
-    this._stepRotores();
-
-    // Input
-    steps.push({
-      component: "input",
-      inputLetter: c,
-      outputLetter: c,
-      inputIndex: c.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // 2. Plugboard (input)
-    let prev = c;
-    c = this.plugboard.trocar(c);
-    steps.push({
-      component: "plugboard_in",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // 3. Forward path: right -> left
-    prev = c;
-    c = this.rotors[2].passarParaFrente(c);
-    steps.push({
-      component: "rotor_r",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    prev = c;
-    c = this.rotors[1].passarParaFrente(c);
-    steps.push({
-      component: "rotor_m",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    prev = c;
-    c = this.rotors[0].passarParaFrente(c);
-    steps.push({
-      component: "rotor_l",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // 4. Reflector
-    prev = c;
-    c = this.reflector.refletir(c);
-    steps.push({
-      component: "reflector",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // 5. Backward path: left -> right
-    prev = c;
-    c = this.rotors[0].passarParaTras(c);
-    steps.push({
-      component: "rotor_l_back",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    prev = c;
-    c = this.rotors[1].passarParaTras(c);
-    steps.push({
-      component: "rotor_m_back",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    prev = c;
-    c = this.rotors[2].passarParaTras(c);
-    steps.push({
-      component: "rotor_r_back",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // 6. Plugboard (output)
-    prev = c;
-    c = this.plugboard.trocar(c);
-    steps.push({
-      component: "plugboard_out",
-      inputLetter: prev,
-      outputLetter: c,
-      inputIndex: prev.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
-    // Output
-    steps.push({
-      component: "output",
-      inputLetter: c,
-      outputLetter: c,
-      inputIndex: c.charCodeAt(0) - 65,
-      outputIndex: c.charCodeAt(0) - 65,
-    });
-
+  build(inputLetter: string, outputLetter: string): SignalPath {
     return {
-      steps,
-      inputLetter: originalInput,
-      outputLetter: c,
+      steps: Object.freeze([...this._steps]),
+      inputLetter,
+      outputLetter,
     };
   }
 
-  encipherText(texto: string): string {
-    let resultado = "";
-    for (const ch of texto) {
-      resultado += this.encipherChar(ch);
-    }
-    return resultado;
+  reset(): void {
+    this._steps = [];
   }
 }
 
-// Standard M3 Rotors
-export const ROTOR_I = () => new Rotor("EKMFLGDQVZNTOWYHXUSPAIBRCJ", "Q");
-export const ROTOR_II = () => new Rotor("AJDKSIRUXBLHWTMCQGZNPYFVOE", "E");
-export const ROTOR_III = () => new Rotor("BDFHJLCPRTXVZNYEIWGAKMUSQO", "V");
-export const ROTOR_IV = () => new Rotor("ESOVPZJAYQUIRHXLNFTGKDCMWB", "J");
-export const ROTOR_V = () => new Rotor("VZBRGITYUPSDNHLXAWMJQOFECK", "Z");
+export class Enigma {
+  private readonly _rotors: [Rotor, Rotor, Rotor]; // [left, middle, right]
+  private readonly _reflector: Reflector;
+  private readonly _plugboard: Plugboard;
 
-// Standard Reflectors
-export const REFLECTOR_B = () => new Reflector("YRUHQSLDPXNGOKMIEBFZCWVJAT");
-export const REFLECTOR_C = () => new Reflector("FVPJIAOYEDRZXWGCTKUQSBNMHL");
+  constructor(
+    rotors: [Rotor, Rotor, Rotor],
+    reflector: Reflector,
+    plugboard: Plugboard
+  ) {
+    this._rotors = rotors;
+    this._reflector = reflector;
+    this._plugboard = plugboard;
+  }
 
-// Rotor configurations
+  get rotors(): readonly [Rotor, Rotor, Rotor] { return this._rotors; }
+  get reflector(): Reflector { return this._reflector; }
+  get plugboard(): Plugboard { return this._plugboard; }
+
+  getPositions(): [string, string, string] {
+    return [
+      this._rotors[0].positionLetter,
+      this._rotors[1].positionLetter,
+      this._rotors[2].positionLetter,
+    ];
+  }
+
+  setPositions(positions: readonly [string, string, string]): void {
+    this._rotors[0].setPosition(positions[0]);
+    this._rotors[1].setPosition(positions[1]);
+    this._rotors[2].setPosition(positions[2]);
+  }
+
+  private stepRotors(): void {
+    const [leftRotor, middleRotor, rightRotor] = this._rotors;
+
+    const middleAtNotch = middleRotor.isAtNotch();
+    const rightAtNotch = rightRotor.isAtNotch();
+
+    if (middleAtNotch) {
+      middleRotor.rotate();
+      leftRotor.rotate();
+    }
+
+    if (rightAtNotch) {
+      middleRotor.rotate();
+    }
+
+    rightRotor.rotate();
+  }
+
+  encipherCharWithPath(char: string): SignalPath {
+    const tracer = new SignalTracer();
+    let signal = char.toUpperCase();
+
+    if (!isValidLetter(signal)) {
+      return {
+        steps: [],
+        inputLetter: char,
+        outputLetter: char,
+      };
+    }
+
+    const originalInput = signal;
+
+    this.stepRotors();
+
+    tracer.record("input", signal, signal);
+
+    const afterPlugboardIn = this._plugboard.swap(signal);
+    tracer.record("plugboard_in", signal, afterPlugboardIn);
+    signal = afterPlugboardIn;
+
+    const afterRotorR = this._rotors[2].forward(signal);
+    tracer.record("rotor_r", signal, afterRotorR);
+    signal = afterRotorR;
+
+    const afterRotorM = this._rotors[1].forward(signal);
+    tracer.record("rotor_m", signal, afterRotorM);
+    signal = afterRotorM;
+
+    const afterRotorL = this._rotors[0].forward(signal);
+    tracer.record("rotor_l", signal, afterRotorL);
+    signal = afterRotorL;
+
+    const afterReflector = this._reflector.reflect(signal);
+    tracer.record("reflector", signal, afterReflector);
+    signal = afterReflector;
+
+    const afterRotorLBack = this._rotors[0].backward(signal);
+    tracer.record("rotor_l_back", signal, afterRotorLBack);
+    signal = afterRotorLBack;
+
+    const afterRotorMBack = this._rotors[1].backward(signal);
+    tracer.record("rotor_m_back", signal, afterRotorMBack);
+    signal = afterRotorMBack;
+
+    const afterRotorRBack = this._rotors[2].backward(signal);
+    tracer.record("rotor_r_back", signal, afterRotorRBack);
+    signal = afterRotorRBack;
+
+    const afterPlugboardOut = this._plugboard.swap(signal);
+    tracer.record("plugboard_out", signal, afterPlugboardOut);
+    signal = afterPlugboardOut;
+
+    tracer.record("output", signal, signal);
+
+    return tracer.build(originalInput, signal);
+  }
+
+  encipherChar(char: string): string {
+    return this.encipherCharWithPath(char).outputLetter;
+  }
+
+  encipherText(text: string): string {
+    return text
+      .split("")
+      .map((char) => this.encipherChar(char))
+      .join("");
+  }
+}
+
+export class RotorFactory {
+  private static readonly CONFIGS: Record<RotorId, RotorConfig> = {
+    I:   { id: "I",   wiring: "EKMFLGDQVZNTOWYHXUSPAIBRCJ", notch: "Q" },
+    II:  { id: "II",  wiring: "AJDKSIRUXBLHWTMCQGZNPYFVOE", notch: "E" },
+    III: { id: "III", wiring: "BDFHJLCPRTXVZNYEIWGAKMUSQO", notch: "V" },
+    IV:  { id: "IV",  wiring: "ESOVPZJAYQUIRHXLNFTGKDCMWB", notch: "J" },
+    V:   { id: "V",   wiring: "VZBRGITYUPSDNHLXAWMJQOFECK", notch: "Z" },
+  };
+
+  static create(id: RotorId, position: string = "A"): Rotor {
+    const config = this.CONFIGS[id];
+    const rotor = new Rotor(config, letterToIndex(position));
+    return rotor;
+  }
+
+  static getConfig(id: RotorId): RotorConfig {
+    return this.CONFIGS[id];
+  }
+
+  static getAvailableIds(): readonly RotorId[] {
+    return Object.keys(this.CONFIGS) as RotorId[];
+  }
+}
+
+export class ReflectorFactory {
+  private static readonly CONFIGS: Record<ReflectorId, ReflectorConfig> = {
+    B: { id: "B", wiring: "YRUHQSLDPXNGOKMIEBFZCWVJAT" },
+    C: { id: "C", wiring: "FVPJIAOYEDRZXWGCTKUQSBNMHL" },
+  };
+
+  static create(id: ReflectorId): Reflector {
+    const config = this.CONFIGS[id];
+    return new Reflector(config);
+  }
+
+  static getConfig(id: ReflectorId): ReflectorConfig {
+    return this.CONFIGS[id];
+  }
+
+  static getAvailableIds(): readonly ReflectorId[] {
+    return Object.keys(this.CONFIGS) as ReflectorId[];
+  }
+}
+
+export class EnigmaFactory {
+  static create(settings: EnigmaSettings): Enigma {
+    const rotors: [Rotor, Rotor, Rotor] = [
+      RotorFactory.create(settings.rotors[0], settings.positions[0]),
+      RotorFactory.create(settings.rotors[1], settings.positions[1]),
+      RotorFactory.create(settings.rotors[2], settings.positions[2]),
+    ];
+
+    const reflector = ReflectorFactory.create(settings.reflector);
+    const plugboard = new Plugboard(settings.plugboardPairs);
+
+    return new Enigma(rotors, reflector, plugboard);
+  }
+
+  static createDefault(): Enigma {
+    return this.create({
+      rotors: ["I", "II", "III"],
+      reflector: "B",
+      positions: ["A", "A", "A"],
+      plugboardPairs: [],
+    });
+  }
+}
+
+// Legacy Exports (for backward compatibility).
+
 export const ROTOR_CONFIGS = {
-  I: { name: "I", factory: ROTOR_I },
-  II: { name: "II", factory: ROTOR_II },
-  III: { name: "III", factory: ROTOR_III },
-  IV: { name: "IV", factory: ROTOR_IV },
-  V: { name: "V", factory: ROTOR_V },
+  I: { name: "I", factory: () => RotorFactory.create("I") },
+  II: { name: "II", factory: () => RotorFactory.create("II") },
+  III: { name: "III", factory: () => RotorFactory.create("III") },
+  IV: { name: "IV", factory: () => RotorFactory.create("IV") },
+  V: { name: "V", factory: () => RotorFactory.create("V") },
 } as const;
 
 export const REFLECTOR_CONFIGS = {
-  B: { name: "B", factory: REFLECTOR_B },
-  C: { name: "C", factory: REFLECTOR_C },
+  B: { name: "B", factory: () => ReflectorFactory.create("B") },
+  C: { name: "C", factory: () => ReflectorFactory.create("C") },
 } as const;
 
-export type RotorType = keyof typeof ROTOR_CONFIGS;
-export type ReflectorType = keyof typeof REFLECTOR_CONFIGS;
+export type RotorType = RotorId;
+export type ReflectorType = ReflectorId;
