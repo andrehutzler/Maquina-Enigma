@@ -7,10 +7,8 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"],
 
-    /* Bundler mode */
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
+    /* Tooling-friendly options */
+    "moduleResolution": "node",
     "noEmit": true,
 
     /* Linting */
